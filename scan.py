@@ -50,6 +50,39 @@ def command_output(arguments):
     return result.stdout.strip()
 
 
+def dig_records(record_type, name):
+    output = command_output(["dig", "+short", record_type, name])
+    return [
+        line.strip().rstrip(".")
+        for line in output.splitlines()
+        if line.strip()
+    ]
+
+
+def resolve_authoritative_nameserver_ip(domain):
+    nameservers = dig_records("NS", domain)
+    if not nameservers:
+        raise RuntimeError(f"No authoritative NS records found for {domain}")
+
+    for nameserver in sorted(nameservers):
+        addresses = []
+        for value in dig_records("A", nameserver):
+            try:
+                address = ipaddress.ip_address(value)
+            except ValueError:
+                continue
+
+            if address.version == 4:
+                addresses.append(address)
+
+        if addresses:
+            return str(sorted(addresses)[0])
+
+    raise RuntimeError(
+        f"No IPv4 addresses found for authoritative NS records of {domain}"
+    )
+
+
 def generate_subnets():
     subnet_size = 2 ** (32 - PREFIX_LENGTH)
     step = SAMPLE_EVERY * subnet_size
@@ -99,7 +132,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--nameserver",
-        help="Nameserver IP address or hostname to use",
+        help="Nameserver IP address to use",
     )
     return parser.parse_args()
 
@@ -113,11 +146,12 @@ def main():
     name_server_ip = args.nameserver
 
     if name_server_ip is None:
-        print("Using name server: Authoritative NS, determined by ECSplorer")
+        name_server_ip = resolve_authoritative_nameserver_ip(DOMAIN)
+        print(f"Using name server: Authoritative NS ({name_server_ip})")
     else:
         print(f"Using name server: Custom ({name_server_ip})")
 
-    INPUT_FILE.write_text(f"{DOMAIN}\n")
+    INPUT_FILE.write_text(f"{DOMAIN},{name_server_ip}\n")
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     scan_directory = RESULT_DIR / f"scan-{timestamp}"

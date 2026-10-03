@@ -13,7 +13,7 @@ PREFIX_LENGTH = 24
 SAMPLE_EVERY = 256
 
 DOMAIN = "do2gy2kwak9k2.cloudfront.net"
-QUERY_RATE = -1#300
+QUERY_RATE = 300
 ITERATIONS = 20
 RETRIES = 1
 
@@ -55,10 +55,10 @@ def command_output(arguments):
 
 
 def generate_subnets():
-    # subnet_size = 2 ** (32 - PREFIX_LENGTH)
-    # step = SAMPLE_EVERY * subnet_size
+    subnet_size = 2 ** (32 - PREFIX_LENGTH)
+    step = SAMPLE_EVERY * subnet_size
     # Remove above, if not testing in sampling mode, only the line below is necessary
-    step = 2 ** (32 - PREFIX_LENGTH)
+    # step = 2 ** (32 - PREFIX_LENGTH)
     subnets = []
 
     for value in range(0, 2**32, step):
@@ -71,26 +71,6 @@ def generate_subnets():
 
     SUBNET_FILE.write_text("\n".join(subnets) + "\n")
     print(f"Generated {len(subnets)} subnets")
-
-
-def find_authoritative_server():
-    name_servers = command_output(
-        ["dig", "+short", "NS", DOMAIN]
-    ).splitlines()
-
-    if not name_servers:
-        raise RuntimeError(f"No authoritative name server found for {DOMAIN}")
-
-    name = name_servers[0].rstrip(".")
-
-    addresses = command_output(
-        ["dig", "+short", "A", name]
-    ).splitlines()
-
-    if not addresses:
-        raise RuntimeError(f"Could not resolve an address for {name}")
-
-    return name, addresses[0]
 
 
 def find_unique_ips(text, excluded_ips):
@@ -107,6 +87,7 @@ def find_unique_ips(text, excluded_ips):
 
     return sorted(addresses, key=ipaddress.ip_address)
 
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -115,22 +96,20 @@ def parse_arguments():
     )
     return parser.parse_args()
 
+
 def main():
-    arguments = parse_arguments()
+    args = parse_arguments()
 
     generate_subnets()
 
-    if arguments.nameserver is None:
-        name_server, name_server_ip = find_authoritative_server()
+    name_server_ip = args.nameserver
+
+    if name_server_ip is None:
+        print("Using name server: Authoritative NS, determined by ECSplorer")
     else:
-        name_server = "Custom"
-        name_server_ip = arguments.nameserver
+        print(f"Using name server: Custom ({name_server_ip})")
 
-    print(f"Using name server: {name_server} ({name_server_ip})")
-
-    # TODO Rewrite with -resolver instead of writing the custom resolver in the input file, might be faster, remove find_authoritative_server as ECSplorer does it on it's own when no resolver is given
-    
-    INPUT_FILE.write_text(f"{DOMAIN},{name_server_ip}\n")
+    INPUT_FILE.write_text(f"{DOMAIN}\n")
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     scan_directory = RESULT_DIR / f"scan-{timestamp}"
@@ -149,6 +128,9 @@ def main():
         f"-retries={RETRIES}",
         "-pr",
     ]
+
+    if name_server_ip is not None:
+        arguments.append(f"-resolver={name_server_ip}")
 
     print("Running ECSplorer...")
 

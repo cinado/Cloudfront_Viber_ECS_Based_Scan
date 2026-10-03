@@ -1,3 +1,4 @@
 domain.txt
 subnets.txt
 result/*
+__pycache__

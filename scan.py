@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 
 import ipaddress
-import re
+import ast
+import csv
 import subprocess
 from datetime import datetime
 from pathlib import Path
@@ -26,11 +27,6 @@ ECSPLORER_BINARY = ECSPLORER_SOURCE_DIR / "ecsplorer"
 SUBNET_FILE = BASE_DIR / "subnets.txt"
 INPUT_FILE = BASE_DIR / "domain.txt"
 RESULT_DIR = BASE_DIR / "result"
-
-IP_PATTERN = re.compile(
-    r"(?<![0-9.])(?:[0-9]{1,3}[.]){3}[0-9]{1,3}(?![0-9.])"
-)
-
 
 def format_duration(seconds):
     seconds = int(seconds)
@@ -73,17 +69,28 @@ def generate_subnets():
     print(f"Generated {len(subnets)} subnets")
 
 
-def find_unique_ips(text, excluded_ips):
+def find_unique_ips(results_file):
     addresses = set()
 
-    for value in IP_PATTERN.findall(text):
-        try:
-            address = ipaddress.ip_address(value)
-        except ValueError:
-            continue
+    with results_file.open(newline="") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            raw_answers = row.get("answers", "")
+            if not raw_answers:
+                continue
 
-        if address not in excluded_ips:
-            addresses.add(str(address))
+            try:
+                answers = ast.literal_eval(raw_answers)
+            except (SyntaxError, ValueError):
+                continue
+
+            for value in answers:
+                try:
+                    address = ipaddress.ip_address(value)
+                except ValueError:
+                    continue
+
+                addresses.add(str(address))
 
     return sorted(addresses, key=ipaddress.ip_address)
 
@@ -98,6 +105,7 @@ def parse_arguments():
 
 
 def main():
+    start_time = time.monotonic()
     args = parse_arguments()
 
     generate_subnets()
@@ -149,10 +157,11 @@ def main():
             f"ECSplorer exited with status {result.returncode}"
         )
 
-    unique_ips = find_unique_ips(
-        scan_output,
-        {ipaddress.ip_address(name_server_ip)},
-    )
+    results_file = scan_directory / "ecsresults.csv"
+    if not results_file.exists():
+        raise RuntimeError(f"ECSplorer did not create {results_file}")
+
+    unique_ips = find_unique_ips(results_file)
 
     unique_ips_file.write_text("\n".join(unique_ips) + "\n")
 

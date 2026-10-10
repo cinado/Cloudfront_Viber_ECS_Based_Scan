@@ -4,6 +4,7 @@ import ipaddress
 import ast
 import csv
 import subprocess
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 import argparse
@@ -15,8 +16,24 @@ SAMPLE_EVERY = 256
 
 DOMAIN = "do2gy2kwak9k2.cloudfront.net"
 QUERY_RATE = 300
-ITERATIONS = 20
+LOG_LEVEL = 1
+IP_GENERATORS = 20
 RETRIES = 1
+
+ERROR_NAMES = {
+    "0": "NO_ERR",
+    "1": "NO_AUTH",
+    "2": "NO_ADD",
+    "3": "NO_EDNS",
+    "4": "NO_ECS",
+    "5": "WRONG_FAM",
+    "6": "SCOPE_OOB",
+    "7": "NO_ANS",
+    "8": "NO_REC",
+    "9": "INTERNAL_ERR",
+    "10": "WRONG_PARAM",
+    "11": "TRUNCATED_NO_TCP",
+}
 
 BASE_DIR = Path(__file__).resolve().parent
 ECSPLORER_DIR = BASE_DIR.parent / "ECSplorer"
@@ -128,11 +145,36 @@ def find_unique_ips(results_file):
     return sorted(addresses, key=ipaddress.ip_address)
 
 
+def count_result_errors(results_file):
+    errors = Counter()
+
+    with results_file.open(newline="") as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            error_code = row.get("error", "")
+            if error_code:
+                errors[ERROR_NAMES.get(error_code, error_code)] += 1
+
+    return errors
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--nameserver",
         help="Nameserver IP address to use",
+    )
+    parser.add_argument(
+        "--query-rate",
+        type=int,
+        default=QUERY_RATE,
+        help=f"ECSplorer query rate per second (default: {QUERY_RATE})",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=int,
+        default=LOG_LEVEL,
+        help=f"ECSplorer log level, 0-3 (default: {LOG_LEVEL})",
     )
     return parser.parse_args()
 
@@ -144,6 +186,7 @@ def main():
     generate_subnets()
 
     name_server_ip = args.nameserver
+    use_resolver = name_server_ip is not None
 
     if name_server_ip is None:
         name_server_ip = resolve_authoritative_nameserver_ip(DOMAIN)
@@ -165,13 +208,13 @@ def main():
         f"-query-list={SUBNET_FILE}",
         f"-if={INPUT_FILE}",
         f"-out={scan_directory}",
-        f"-query-rate={QUERY_RATE}",
-        f"-ni={ITERATIONS}",
+        f"-query-rate={args.query_rate}",
+        f"-ni={IP_GENERATORS}",
+        f"-ll={args.log_level}",
         f"-retries={RETRIES}",
-        "-pr",
     ]
 
-    if name_server_ip is not None:
+    if use_resolver:
         arguments.append(f"-resolver={name_server_ip}")
 
     print("Running ECSplorer...")
@@ -196,6 +239,7 @@ def main():
         raise RuntimeError(f"ECSplorer did not create {results_file}")
 
     unique_ips = find_unique_ips(results_file)
+    error_counts = count_result_errors(results_file)
 
     unique_ips_file.write_text("\n".join(unique_ips) + "\n")
 
@@ -205,6 +249,7 @@ def main():
     print(f"Log file: {log_file}")
     print(f"Unique IPs: {unique_ips_file}")
     print(f"Unique IP count: {len(unique_ips)}")
+    print(f"ECSplorer result errors: {dict(sorted(error_counts.items()))}")
     print(f"Elapsed time: {elapsed}")
 
 

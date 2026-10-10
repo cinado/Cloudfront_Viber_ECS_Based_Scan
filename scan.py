@@ -11,8 +11,8 @@ import argparse
 import time
 
 
-PREFIX_LENGTH = 24
-SAMPLE_EVERY = 256
+DEFAULT_SUBNET_PREFIX_LENGTH = 24
+DEFAULT_SAMPLE_EVERY = 1
 
 DOMAIN = "do2gy2kwak9k2.cloudfront.net"
 QUERY_RATE = 300
@@ -41,7 +41,7 @@ ECSPLORER_SOURCE_DIR = ECSPLORER_DIR / "src"
 ECSPLORER_BINARY = ECSPLORER_SOURCE_DIR / "ecsplorer"
 
 
-SUBNET_FILE = BASE_DIR / "subnets.txt"
+SUBNET_DIR = BASE_DIR / "subnets"
 INPUT_FILE = BASE_DIR / "domain.txt"
 RESULT_DIR = BASE_DIR / "result"
 
@@ -100,23 +100,54 @@ def resolve_authoritative_nameserver_ip(domain):
     )
 
 
-def generate_subnets():
-    subnet_size = 2 ** (32 - PREFIX_LENGTH)
-    step = SAMPLE_EVERY * subnet_size
-    # Remove above, if not testing in sampling mode, only the line below is necessary
-    # step = 2 ** (32 - PREFIX_LENGTH)
-    subnets = []
+def build_subnet_query_list_cache_file_path(prefix_length, sample_every):
+    if sample_every == 1:
+        filename = f"{prefix_length}_subnet.txt"
+    else:
+        filename = f"{prefix_length}_subnet_{sample_every}_sampled.txt"
 
-    for value in range(0, 2**32, step):
-        network = ipaddress.ip_network(
-            f"{ipaddress.IPv4Address(value)}/{PREFIX_LENGTH}"
-        )
+    return SUBNET_DIR / filename
 
-        if network.network_address.is_global:
-            subnets.append(str(network))
 
-    SUBNET_FILE.write_text("\n".join(subnets) + "\n")
-    print(f"Generated {len(subnets)} subnets")
+def generate_global_ipv4_subnet_query_list_file(
+    output_file,
+    prefix_length,
+    sample_every,
+):
+    subnet_size = 2 ** (32 - prefix_length)
+    step = sample_every * subnet_size
+    subnet_count = 0
+
+    with output_file.open("w") as file:
+        for value in range(0, 2**32, step):
+            network = ipaddress.ip_network(
+                f"{ipaddress.IPv4Address(value)}/{prefix_length}"
+            )
+
+            if network.network_address.is_global:
+                file.write(f"{network}\n")
+                subnet_count += 1
+
+    print(f"Generated {subnet_count} subnets: {output_file}")
+
+
+def get_or_create_subnet_query_list_file(prefix_length, sample_every):
+    SUBNET_DIR.mkdir(exist_ok=True)
+    subnet_file = build_subnet_query_list_cache_file_path(
+        prefix_length,
+        sample_every,
+    )
+
+    if subnet_file.exists():
+        print(f"Using cached subnets: {subnet_file}")
+        return subnet_file
+
+    generate_global_ipv4_subnet_query_list_file(
+        subnet_file,
+        prefix_length,
+        sample_every,
+    )
+    return subnet_file
 
 
 def find_unique_ips(results_file):
@@ -176,14 +207,42 @@ def parse_arguments():
         default=LOG_LEVEL,
         help=f"ECSplorer log level, 0-3 (default: {LOG_LEVEL})",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--subnet-prefix-length",
+        type=int,
+        default=DEFAULT_SUBNET_PREFIX_LENGTH,
+        help=(
+            "IPv4 subnet prefix length for ECS queries "
+            f"(default: {DEFAULT_SUBNET_PREFIX_LENGTH})"
+        ),
+    )
+    parser.add_argument(
+        "--sample-every",
+        type=int,
+        default=DEFAULT_SAMPLE_EVERY,
+        help=(
+            "Use every Nth subnet; 1 disables sampling "
+            f"(default: {DEFAULT_SAMPLE_EVERY})"
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.subnet_prefix_length < 1 or args.subnet_prefix_length > 32:
+        parser.error("--subnet-prefix-length must be between 1 and 32")
+    if args.sample_every < 1:
+        parser.error("--sample-every must be at least 1")
+
+    return args
 
 
 def main():
     start_time = time.monotonic()
     args = parse_arguments()
 
-    generate_subnets()
+    subnet_query_list_file = get_or_create_subnet_query_list_file(
+        args.subnet_prefix_length,
+        args.sample_every,
+    )
 
     name_server_ip = args.nameserver
     use_resolver = name_server_ip is not None
@@ -205,7 +264,7 @@ def main():
 
     arguments = [
         str(ECSPLORER_BINARY),
-        f"-query-list={SUBNET_FILE}",
+        f"-query-list={subnet_query_list_file}",
         f"-if={INPUT_FILE}",
         f"-out={scan_directory}",
         f"-query-rate={args.query_rate}",
